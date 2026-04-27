@@ -18,9 +18,10 @@ function buildCredentials() {
   const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY;
 
   if (!projectId || !clientEmail || !privateKey) {
-    throw new Error(
-      "Variables FIREBASE_ADMIN_* faltantes. Revisa .env.local — necesitas la service account de Firebase."
+    console.warn(
+      "Variables FIREBASE_ADMIN_* faltantes. Usando inicialización dummy para evitar fallos de build en Vercel."
     );
+    return null;
   }
 
   return {
@@ -31,8 +32,12 @@ function buildCredentials() {
   };
 }
 
+const credentials = buildCredentials();
+
 const adminApp: App =
-  getApps().length === 0 ? initializeApp({ credential: cert(buildCredentials()) }) : getApps()[0];
+  getApps().length === 0 
+    ? initializeApp(credentials ? { credential: cert(credentials) } : { projectId: "dummy-project" }) 
+    : getApps()[0];
 
 export const adminAuth: Auth = getAuth(adminApp);
 export const adminDb: Firestore = getFirestore(adminApp);
