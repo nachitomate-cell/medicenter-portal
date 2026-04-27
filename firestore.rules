@@ -1,0 +1,92 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getRole() {
+      return userData().role;
+    }
+
+    function isActive() {
+      // status puede no existir en cuentas legacy → tratamos como activo
+      return !('status' in userData()) || userData().status == 'active' || userData().status == 'invited';
+    }
+
+    function isAdmin() { return isSignedIn() && getRole() == 'admin' && isActive(); }
+    function isDoctor() { return isSignedIn() && getRole() == 'doctor' && isActive(); }
+    function isSecretary() { return isSignedIn() && getRole() == 'secretary' && isActive(); }
+
+    // Perfiles de usuarios
+    // Lectura: el propio usuario puede leer su doc; admin lee todos.
+    // Escritura: TODA gestión de usuarios va por API routes con Admin SDK.
+    // Única excepción: el propio usuario marcando invited→active al primer login.
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+
+      allow update: if request.auth.uid == uid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['status', 'activatedAt'])
+                    && resource.data.status == 'invited'
+                    && request.resource.data.status == 'active';
+
+      allow create, delete: if false;
+    }
+
+    // Presencia en tiempo real (MVP: TTL por heartbeat, sin Cloud Function de limpieza)
+    // TODO: Cloud Function que elimine docs con lastHeartbeat > 30s para sesiones huérfanas
+    //
+    // Sin isActive() deliberadamente: el check extra haría un get() al doc del usuario
+    // en cada heartbeat. Auth de Firebase ya bloquea cuentas desactivadas a nivel de token.
+    match /presence/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Pacientes
+    match /patients/{patientId} {
+      allow read: if isSignedIn() && isActive();
+
+      allow create: if (isSecretary() || isAdmin())
+                    && request.resource.data.uploadedBy == request.auth.uid
+                    && request.resource.data.status == 'waiting';
+
+      allow update: if (isDoctor() || isAdmin())
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['status', 'notes']);
+
+      allow delete: if false;
+
+      // Anotaciones DICOM — subcolección por paciente.
+      //
+      // Lectura: cualquier rol activo puede ver las anotaciones de un paciente.
+      //   Un médico debe poder ver lo que anotó un colega antes que él.
+      //
+      // Escritura: solo doctor o admin, y solo si el campo createdBy coincide
+      //   con el UID del solicitante (no puedes crear anotaciones a nombre de otro).
+      //   La excepción es la actualización de anotaciones propias (ANNOTATION_MODIFIED)
+      //   o ajenas (otro médico corrige un handle) — en ese caso verificamos que el
+      //   doc ya exista (resource != null) en vez de forzar createdBy.
+      //
+      // Borrado: doctor o admin pueden borrar cualquier anotación del paciente.
+      //   Decisión: en radiología el médico revisante puede limpiar el canvas completo.
+      match /annotations/{annotationId} {
+        allow read: if isSignedIn() && isActive();
+
+        allow create: if (isDoctor() || isAdmin())
+                      && request.resource.data.createdBy == request.auth.uid;
+
+        allow update: if (isDoctor() || isAdmin());
+
+        allow delete: if (isDoctor() || isAdmin());
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    match /mammograms/{rut}/{fileName} {
+      // Lectura: cualquier usuario autenticado
+      allow read: if isSignedIn();
+
+      // Escritura: usuario autenticado, máx 100 MB, tipos permitidos.
+      // El control de rol (secretary/admin) lo hace la app — el firestore.get()
+      // cross-service en Storage rules es poco fiable en proyectos nuevos.
+      allow create: if isSignedIn()
+                    && request.resource.size < 100 * 1024 * 1024
+                    && (
+                      request.resource.contentType.matches('image/.*')
+                      || request.resource.contentType == 'application/pdf'
+                      || request.resource.contentType == 'application/dicom'
+                    );
+
+      allow delete: if false;
+    }
+  }
+}
